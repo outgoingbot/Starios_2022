@@ -1,0 +1,270 @@
+
+===============================2020 notes OLD NOTES======================================
+  goals:
+  1)use SPI with DMA to write a neoPixel Function stack   <------- DONE. SPI requires 2.25MHz to 2.5MHz clock speed
+  2)Write a matrix library that can perform many common transformations. Translations, rotations, scale, skew, etc ,--I have code on the ESP12F "twitch badge"
+  3)Integrate the FTT c library into this code to do Fast Fourier Transform on AUdio data without the need of MSGEQ7 icd  <------ DONE 90%
+  4)write Battery Monitor Gauge function
+  ---PINOUTS----
+  -OLED -> PB6=SCK, PB7=SDA, PB1=RST (OUTPUT)
+  -RGB -> PB15 (SPI2 MOSI)
+  -MEMS AUDIO -> PA0 (Analog INPUT)
+  -Battery Monitor -> PA1 (Analog INPUT)
+  -Battery Monitor Enable -> PA2 (OUTPUT)
+  -USB Connected Monitor -> PA3 (INPUT) ~2.5v Connected
+  -USB Detect/Enable -> PB9 (low at boot, High when PA3 is active)
+  -Soft Power -> PB8 (OUTPUT)
+  -Buzzer -> PB0 (OUTPUT) *change to timer PWM-Mode output //gone
+  -Buttons -> BTN1=PB3 (INPUT), BTN2=PB4 (INPUT), BTN3=PB5 (PULL-UP INPUT) // All Active LOW
+  -USB -> PA11, PA12 //having issue where USB data Pins are powering on the device <--Fixed using PB9 OUTPUT HIGH (3v3) when PA3 VBUS Detect INPUT HIGH.
+
+   BOOT0: LOW = RUN, HIGH = PROGRAM
+-TIM3 is on APB1 (72MHz)
+
+   *****ISSUES:
+	1) Boot0 Pin State is confusing me. it seems to work either high or low now <- because BOOT1 is also low?
+	2) ADC1 (read_bat_adc) is slowing down the Audio Sampling. battery should only be checked every few minutes
+	3) USB Virtual Serial Port Is only working if device is already on. <-- Fixed. note above
+
+   ******Need to Write:
+	1)Soft Power
+	2)Noise Calibration & Auto Leveler(uses timer. maybe able to use FFT Timer)
+	4)Function to pass-in a BIN value and have it Map to n-size output. used in all audio mode animations. instead of mapping in each animation
+	5)Write a matrix library that can perform many common transformations. Translations, rotations, scale, skew, etc
+	
+
+audio functions: Most readings are using a simple moving average i.e (current + previous) / 2
+
+	INIT) Calibrate Mic. run this by holding BTN1 at boot. All it does: get an average. shows bar graph. write EEPROM
+		-if(calibrationFlag) Store Readings into NoisePCB[i] Array
+
+	1) Adjust Vals: does 2 things. filters raw data and updates (increases) highthresh[i] as needed.
+		-valS[i] = Rawvalue[i] - lowThresh[i] - NoisePCB[i]
+
+		-highthresh[i] Minimum is lowthresh[i] + hOffset.  hOffset is just some fixed number, 6 is used on the atmel version
+		-highThresh[i] is increased to ValS[i] if valS[i] > highthresh[i].
+				interestingly. ValS[i] must also be < highthresh[i] + (2*hOffset).
+				i think this is to prevent much larger signals from changing highthresh[i] too much too quickly
+				in the mean time, in the ISR, highthresh[i]-- is pccuring every ISR cycle.
+		-lowThresh[i] is only set manually using an exponential function.
+
+	2) MSGEQ7 Mode
+		-updateLowHighThresh(); - This function is mainly to manually update lowthresh[i] with a button press, and also resets highthresh[i] = lowthresh[i] + hOffset
+		-Turn Hardware Sample Timer ON (ISR) -get raw data from fft. (really a running average) and perform highthresh[i]-- (or similar)
+		-Run AdjustVals();  -listed above. remove noise and lowthresh from raw data. updates high thresh
+		-Signal-Size Mapping. Does "need to write #4" (above) for each animation
+		-map N dist and/or brightness/special mode action(high bass) to some sort of pre-defines vector. animations suck becuase they are based off static geometry.
+		   	-yDist = (valS[i]*numRows) / (highThresh[i]-lowThresh[i]) // example of a mapping function with inMin = 0 and OutMin = 0
+		-Show();
+
+++STOPPED HERE. REVIEW ABOVE #2
+
+
+-a better approach?
+	0) calibration needs to exist? performed when it is quiet. maybe use the map() and set lowthresh[i] = NoisePCB[i] at boot? to omit any calibration?
+	1)  Start Timer
+	    Windowing()
+		FFT()
+		adjustVals() (perform filtering, increase highthresh[i] as needed, perform highthresh[i]-- (decrease over time interval), running average?
+		Stop Timer
+	2)update RGB animation() - need access to valS[i], yDist, rDist,gDist,bDist. write functions that can return those. perhaps others?
+	3)checkbuttons()
+	  -at a slower interval: analog read battery and check USB
+	4)show OLED();
+	  show RGB();
+
+
+-There is a random number function I wrote to simplify getting a random number
+-I have the stm32 outputting serial data on USb detect
+
+--should change the display to use DMA also?
+
+
+
+
+12AUG2022
+=========================================================Software issues=====================================================
+I DONT KNOW WHAT CODE TO USE AS A BASE! <- Im good. created a Starios_2022_v1 project
+
+STM32 HAL usage for correct ADC measuring
+avoid blocking on ADC, SPI, I2C (prioritize the DMA usage) 
+
+All three are slow. compute transfer/refresh times for each process
+ADC (microphone sampling) time = ? think its #SAMPLES(N) * (ADC_CYCLES(7.5) + 12.5) / 12Mhz
+I2C (OLED Refresh) time = 1.28ms (512 bytes at 400kHz I2c) This is using DMA
+SPI (RGB Refresh) time = ?
+
+the SPILOWTIME Math is wrong X * (2.25E6)^-1 = 80E-6   ->  X = 180 Bits
+180 / 8 = 22.5 bytes are need to at the end of a SPI transmission to be in spec
+
+=======================================================ADC setup=====================================================
+Sampling amount, rate, etc? use the HAL function to check the ADC is read: HAL_ADC_PollForConversion(&hadc1, 100); 
+ADC is 12-Bit
+ bookmarked a webpage that discusses the need for a RC circuit on the ADC input to allow fast sample times
+
+ADC conversion time 1us at 56MHz and 1.17us at 72MHz
+if we are to make a linear model the ADC conversion time is 0.010625 uS per 1 MHz
+I think the ADC is running at 12MHZ can only make 64 samples at ~29342 Hz (LESS THAN nyquist)
+I can do 32 Samples @ 12Mhz ADC and 58685 Hz (this is better)
+
+from datasheet:
+ sample conversion time: Time = (sampling time + 12.5) / ADC Clock
+ Time = (x+12.5)/12Mhz : Do Sample all the FFT BINS before Calling FFT() or call FFT() after EVERY ADC sample? <- I think I need to have ALL the BINS full
+ This is for one ADC sample. I will need to make N samples at 44kHz ?
+ 1/(2*max Freq) = N*(cycle time + 12.5) / ADC Clock
+i.e. 1/44kHz = 64 * (x+12.5)/12MHz (this wont work. too many samples) < I dont think i need to multiply by N. I only need 1 adc. this is good an will allow me to increase the sample cycles (blocking though :< )
+
+I think the max the BIN size 16. 32 BINS can only be filled at 26785 Hz with 1.5 cycle conversions
+16 Bins can be filled at 53571Hz
+
+I STILL DONT KNOW IF I NEED TO TAKE EACH ADC SAMPLE AT 44KHZ OR IF I NEED TO TAKE N ADC SAMPLES AT 44KHZ !!!!!! It seems like EACH ADC reading so this will allow me to increase the ADC cycle time and get better results
+<- Ok it does seem that I only need 1 ADC sample at 2*max freq.
+
+
+=====================================================FFT setup=====================================================
+I am using the arduinoFFT cpp library. I must have extracted the .h and .cpp files contents and put them in main.c.
+I need to go through this and make it simpler.
+Just need ADC -> Windowing -> computeFFT -> computeMAG -> *BINscaling -> AudioMap   (*BIN scaling to improve low freq response)
+
+To test the FFT I can generate a fake ADC sample, internally, buy just using a sin() function and taking some discrete sample points for various freqs  <---- DO THIS!
+Also, Use the arduino FFT examples to better implement the FFT
+
+I may get better low freq results if I do not have a DC offset adc readings. I could store the ADC results into a SIGNED Var array. so subtract the DC offset PRIOR to storing the ADC values that
+are to be sent to the FFT.
+
+I want 16 Freqs (16 columns of Leds) I could do 8 Freqs (close match the msgeq7) and interpolate to 16
+Do I need to subract the DC offset (1.65v) from the ADC?  <- seems like NO but not sure
+
+Maybe I should try to find the exact 8 (or 16)  frequencies that produce an equal gain (Vpp on the ADC).
+Use the Oscope to find those 'magic' freqs then tailor the FFT to
+MSGEQ7 = 63Hz, 160, 400, 1000, 2500, 6250, 16000Hz
+
+Here are some bottom-Line answers to FFT:
+-ADC needs to be called ONCE at a 44Khz rate
+-can get better results with; increasing number of BINS, Increasing sample cycle time; adding a RC low pass at the ADC input
+-ADC delay time is around 0.4mS if 256 BINS, 7.5 ADC cycles.
+
+=Problems
+The Current code assumes a 14 bit ADC !! This is big issue! (its a 12bit ADC on the stm32f103)
+Some variables used assume a 10bit adc (max ADC value of 1024) this is a big issue! (should be 2^12= 4096)
+Some code builds dont seem to sample the ADC at any given rate. huge issue! (should be using a timer interrupt at 2x the max freq. Nyquist)
+
+
+=======================================================RANDOM IDEAS=====================================================
+//------------------------------The way the volume auto-scaling (software) should work ------------------------------
+//INIT
+//0) Calibrate the "no sound" FFT algorith outputs. Store the FFT reading when no sound into channelNOISE[n]. This is now the new 0 (zero) value to be used in animations (RGB,OLED)
+
+//LOOP
+//1) Get the FFT results as normal and store. 
+//2) Apply anytype of adjustments to raw FFT results. function or discrete list.
+//3) Check if new channelNOW[n] value greater than previous value. Yes -> store into channelMAX[n] array;
+//3b) Check if new channelNOW[n] value lower than previous value. Yes -> store into channelMIN[n] array;// need to think if i need a NOISE and MIN array?
+//4) I can now map a FFT value to another range) mapAudio(channelNOW,channelMIN,channelMAX,outRangeMIN,outRangeMMAX); //returns a value between outRangeMIN and outRangeMAX
+//5) Reduce all channelMAX[n] value at a somewhat slow rate. Around 1% a second? 1/(Fft data type)
+
+Hardware Timer frequency math: tim uptade frequency = TIM_CLK/(TIM_PSC+1)/(TIM_ARR + 1) 
+=====================================================GOALS=====================================================
+-reduce the amount of flash/ram as much as possible.
+wasting ram on some arrays that DONT need to be size [N]
+remove text/character support on rgb led?
+
+-increase FFT size. I want 256 minimum. N=256 gives ~111Hz per BIN and N=512 is 63Hz per BIN
+-review the adjustVals() stuff, seems like it could be simpler
+-implement EEPROM lib
+-add USB vCOM port if possible
+
+//Todo: Implement the algorith below. avoid wasting memory. make sure datatypes make sense. <-done
+	/*
+	 Collect N samples with DC offset subtracted (2048). (2^12)/2 This works because the DC offset is 1.65v. half of 3.3V
+	 store into the REX[i] array
+	 perform windowing on the REX[i] array
+	 Compute the FFT. the ADC values stored in the REX[i] array will be OVERWRITTEN with the FFT output real-component
+	 get the magnitude of the complex results. I ONLY NEED TO CALC THE MAG of 16 samples (mag will be of type double) <- this will save lots of time.
+	 the 16 magnitudes can be saved in the REX[i]. again, to save memory. (another array of size 16 prob be ok)
+
+	 The 16 used values can then be filtered as I please. (adjust vals and highTresh)
+	 then mapped to a range. (audioMap)
+	 */
+	 
+//oled text example
+//	char str[6]; //23 change this based on the string + data + newline+string null, etc
+//	sprintf(str, "%4d", n_count); //sprintf is complainging becuase using uint8_t instead of char
+//	SSD1306_GotoXY (0,0);
+//	SSD1306_Puts (str, &Font_7x10, 1);; //1 if USB plugged in, 0 if not plugged in
+//	SSD1306_UpdateScreen(); //display
+
+
+
+//some test area shit 2022
+//the adc is subtracting the the DC offset. keep in mind the DC offset will vary with each PCB board.
+
+//int16_t adctest[100];
+//int16_t avg=0; //getting 1980 decimal<- this is near (2^12 - 1) / 2. correct for a 12-bit ADC with a DCoffset offset of 3.3V/2=1.65v
+//int16_t diff = 0;
+//int16_t diffFromZero = 4096;
+//int16_t min = 16000; //1068
+//int16_t max = 0; //2775
+//while(1){
+//	for(int i=0; i<100; i++){
+//	    HAL_ADC_Start(&hadc1);
+//		HAL_ADC_PollForConversion(&hadc1, 100); //wait (blocking) for the conversion to complete ?
+//	    //because HAL_ADC_Getvalue only returns 0 to 2^12-1; half of that is 2047.5. lets round it to 2048 (this is fine for a int16_t)
+//		//the value 1980 below should be set during a mic calibration process!!!! no need to have an array of NoisePCB[x]. this is a huge waste.
+//		adctest[i] = (int16_t)(HAL_ADC_GetValue(&hadc1) & (0xFFFF)) - 1980; //make sure only the lower 16 bytes are stored.
+//	    HAL_ADC_Stop(&hadc1);
+//if(adctest[i] > max) max = adctest[i];
+//if(adctest[i] < min) min = adctest[i];
+//		diff = max-min;
+//		diffFromZero = abs(max) - abs(min);
+//		diffFromZero = abs(diffFromZero);
+//		avg=(avg+adctest[i])/2;
+//		HAL_Delay(1);
+//	}
+//	HAL_Delay(1000);
+//}	 
+
+
+progress notes:
+fixed a lot of ssd1306 oled stuff. DMA working very well. oled change notes inside ssd1306.c and .h
+I have verified the ADC reading seems good for the V4 Board Audio circuit.
+
+I have verified the Timer 3 30kHz math/config is correct
+
+need to write lots of notes about:
+the logarithmic output from getMAG now. changing N and the sampling rate changes the log() paramaters.
+need to use SIMULATE 1 to find the FFT_RAW_MAX. this needs to be pulled from MAGmax[i] after a full sweep. and copied to the #define
+
+getMAG() can output db to compare with a phone app. i have it flipped to scale positively.
+
+still messing with adjustVals(). playing with some numbers. HOFFSET_SCALER, senserate, fastsenserate.
+also doing some filtering at the top of adjustVals()
+
+Keep the MAG[i] a double until AFTER getMAG() and adjustVals() <-done
+
+make a copy getting rid of all the RGB SPI stuff. enable USB vCOM port and debug graphically in sfml, serial plotter <- done. v2 does this
+
+I have made getMAG return dicibels (db). sort of its inverted to scale positively
+I made a lowpass filter in adjustvals(). larger buffer is better but slower to respond
+I may have broke the SIMULATE 1 on the version of the code that uses lowpass filtering <- Fixed
+
+64k flash is too small!! switch to STM32F103C8 which has 128k flash. MUST DO!
+
+Sampling at 20kHz (SPU410 MEMS Mic rated) <- im getting reflections :( 
+
+should i model the spu410 mic ? it looks cubic.
+
+I dont think i want a corellation function. i want LESS of other freqs in the magnitude. thing is, after I SUM them i divide so do i get less???
+msgeq7: band pass -> peak detection. (can i implement this is software?
+
+
+
+
+
+
+
+
+
+
+
+
