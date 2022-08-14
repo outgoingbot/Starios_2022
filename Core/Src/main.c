@@ -312,10 +312,12 @@ int main(void)
 			const double amplitude = 4095; //4095 would be
 			double cycles = (((N-1) * signalFrequency) / samplingFrequency); //Number of signal cycles that the sampling will read
 			REX[n_count] = ((amplitude * (sin((n_count * (twoPi * cycles)) / N))) / 2.0);/* Build data with positive and negative values*/
+			IMX[n_count] = 0;
 			//FFT testing using simulated sinwave
 	#else
 				REX[n_count] = (double) read_adc() - 2048 + CAL_OFFSET;//12bit ADC (just store this into the REX[i] array. no need to have the adc_value variable
-	#endif
+				IMX[n_count] = 0;
+				#endif
 				n_count++;
 				if (n_count >= N){
 	#if SIMULATE
