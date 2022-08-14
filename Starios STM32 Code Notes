@@ -257,7 +257,7 @@ should i model the spu410 mic ? it looks cubic.
 I dont think i want a corellation function. i want LESS of other freqs in the magnitude. thing is, after I SUM them i divide so do i get less???
 msgeq7: band pass -> peak detection. (can i implement this is software?
 
-ADC
+ADC 2
 
 
 
